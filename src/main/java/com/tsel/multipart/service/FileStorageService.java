@@ -1,13 +1,15 @@
 package com.tsel.multipart.service;
 
 import com.tsel.multipart.data.FileInfo;
+import com.tsel.multipart.data.UnloadedFile;
 import java.util.List;
-import org.springframework.core.io.Resource;
 import org.springframework.web.multipart.MultipartFile;
 
 public interface FileStorageService {
 
     void save(MultipartFile file);
+
+    void saveAll(MultipartFile[] files);
 
     List<FileInfo> getAllFilesInfo();
 
@@ -15,5 +17,5 @@ public interface FileStorageService {
 
     void clearAllStorage();
 
-    Resource loadFileFromStorage(String fileName);
+    UnloadedFile loadFileFromStorage(String fileName);
 }

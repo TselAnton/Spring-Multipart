@@ -1,6 +1,9 @@
 package com.tsel.multipart.data;
 
+import java.io.PrintWriter;
 import java.io.Serializable;
+import java.io.StringWriter;
+import java.util.Arrays;
 import java.util.Objects;
 import org.springframework.http.HttpStatus;
 
@@ -10,12 +13,12 @@ public class ResponseErrorMessage implements Serializable {
 
     private HttpStatus status;
     private String exceptionMessage;
-    private Throwable causeBy;
+    private String[] causeBy;
 
     public ResponseErrorMessage(HttpStatus status, String exceptionMessage, Throwable causeBy) {
         this.status = status;
         this.exceptionMessage = exceptionMessage;
-        this.causeBy = causeBy;
+        this.causeBy = convertThrowableStackTraceToString(causeBy);
     }
 
     public HttpStatus getStatus() {
@@ -34,12 +37,22 @@ public class ResponseErrorMessage implements Serializable {
         this.exceptionMessage = exceptionMessage;
     }
 
-    public Throwable getCauseBy() {
+    public String[] getCauseBy() {
         return causeBy;
     }
 
-    public void setCauseBy(Throwable causeBy) {
+    public void setCauseBy(String[] causeBy) {
         this.causeBy = causeBy;
+    }
+
+    private String[] convertThrowableStackTraceToString(Throwable throwable) {
+        if (throwable == null) {
+            return new String[0];
+        }
+
+        StringWriter writer = new StringWriter();
+        throwable.printStackTrace(new PrintWriter(writer));
+        return writer.toString().split("\r\n\tat ");
     }
 
     @Override
@@ -49,7 +62,7 @@ public class ResponseErrorMessage implements Serializable {
         ResponseErrorMessage that = (ResponseErrorMessage) o;
         return status == that.status &&
                 exceptionMessage.equals(that.exceptionMessage) &&
-                Objects.equals(causeBy, that.causeBy);
+                Arrays.equals(causeBy, that.causeBy);
     }
 
     @Override

@@ -1,8 +1,22 @@
 package com.tsel.multipart.service;
 
+import static com.tsel.multipart.exception.MyWebException.throwEx;
+import static java.lang.Boolean.TRUE;
+import static java.lang.String.format;
+import static java.util.stream.Collectors.toList;
+import static org.springframework.http.HttpStatus.BAD_REQUEST;
+import static org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR;
+import static org.springframework.http.HttpStatus.NOT_FOUND;
+import static org.springframework.http.HttpStatus.UNSUPPORTED_MEDIA_TYPE;
+
 import com.tsel.multipart.data.FileInfo;
+import com.tsel.multipart.data.UnloadedFile;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -10,7 +24,6 @@ import java.nio.file.Paths;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -19,20 +32,10 @@ import javax.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.Resource;
-import org.springframework.core.io.UrlResource;
 import org.springframework.stereotype.Service;
+import org.springframework.util.FileSystemUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
-
-import static com.tsel.multipart.exception.MyWebException.throwEx;
-import static java.lang.Boolean.TRUE;
-import static java.lang.String.format;
-import static java.util.Optional.ofNullable;
-import static java.util.stream.Collectors.toList;
-import static org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR;
-import static org.springframework.http.HttpStatus.NOT_FOUND;
-import static org.springframework.http.HttpStatus.UNSUPPORTED_MEDIA_TYPE;
 
 @Service
 public class FileStorageServiceImpl implements FileStorageService {
@@ -65,6 +68,7 @@ public class FileStorageServiceImpl implements FileStorageService {
                 throw new IOException(STORAGE_CLEAN_ERROR);
             }
         }
+
         if (!Files.isDirectory(storagePath)) {
             Files.createDirectory(storagePath);
             LOGGER.info("Storage created");
@@ -73,17 +77,36 @@ public class FileStorageServiceImpl implements FileStorageService {
 
     @Override
     public void save(MultipartFile file) {
+        if (file == null || file.getSize() == 0) {
+            throw throwEx(BAD_REQUEST, "The file(s) can't be saved because it is null value!");
+        }
+
         if (isNotAllowedExtension(file)) {
-            throw throwEx(UNSUPPORTED_MEDIA_TYPE, format("The file \"%s\" has an illegal extension!", file.getName()));
+            throw throwEx(UNSUPPORTED_MEDIA_TYPE,
+                format("The file \"%s\" has an illegal extension!", file.getOriginalFilename()));
         }
 
         try {
             Files.copy(file.getInputStream(), resolveFilePath(file.getOriginalFilename()));
-            LOGGER.info("File \"{}\" was saved to storage", file.getName());
-        } catch (IOException e) {
+            LOGGER.info("The file \"{}\" was saved to storage", file.getOriginalFilename());
+
+        } catch (FileAlreadyExistsException e) {
+            throw throwEx(BAD_REQUEST,
+                format("The file with name \"%s\" already exist in storage!", file.getOriginalFilename()), e);
+
+        } catch (Exception e) {
             throw throwEx(INTERNAL_SERVER_ERROR,
-                    format("The file \"%s\" cannot be saved to the repository!", file.getName()), e);
+                    format("The file \"%s\" cannot be saved to the repository!", file.getOriginalFilename()), e);
         }
+    }
+
+    @Override
+    public void saveAll(MultipartFile[] files) {
+        if (files == null) {
+            throw throwEx(BAD_REQUEST, "Files is null value!");
+        }
+
+        Stream.of(files).forEach(this::save);
     }
 
     @Override
@@ -95,7 +118,7 @@ public class FileStorageServiceImpl implements FileStorageService {
                     .filter(Objects::nonNull)
                     .collect(toList());
 
-        } catch (IOException e) {
+        } catch (Exception e) {
             throw throwEx(INTERNAL_SERVER_ERROR,
                     "Something went wrong while getting a list of all files in the repository!", e);
         }
@@ -109,7 +132,7 @@ public class FileStorageServiceImpl implements FileStorageService {
         } catch (NoSuchFileException e) {
             throw throwEx(NOT_FOUND, format("The file with the name \"%s\" was not found in the " +
                             "storage and could not be deleted!", fileName), e);
-        } catch (IOException e) {
+        } catch (Exception e) {
             throw throwEx(INTERNAL_SERVER_ERROR,
                     format("Something went wrong while deleting a file \"%s\"!", fileName), e);
         }
@@ -118,42 +141,45 @@ public class FileStorageServiceImpl implements FileStorageService {
     @Override
     public void clearAllStorage() {
         if (!clearDir(storagePath.toFile())) {
-            LOGGER.error(STORAGE_CLEAN_ERROR);
             throw throwEx(INTERNAL_SERVER_ERROR, STORAGE_CLEAN_ERROR);
         }
         if (!Files.isDirectory(storagePath)) {
             try {
                 Files.createDirectory(storagePath);
                 LOGGER.info("Storage created");
-            } catch (IOException e) {
+            } catch (Exception e) {
                 throw throwEx(INTERNAL_SERVER_ERROR, STORAGE_CLEAN_ERROR, e);
             }
         }
     }
 
     @Override
-    public Resource loadFileFromStorage(String fileName) {
-        try (Stream<Path> paths = Files.walk(storagePath)) {
-            Optional<File> file = paths.filter(Files::isRegularFile)
-                    .map(Path::toFile)
-                    .filter(f -> f.getName().equals(fileName))
-                    .findFirst();
-            if (file.isPresent()) {
-                return new UrlResource(file.get().toURI());
-            } else {
-                throw throwEx(NOT_FOUND, format("The file with the name \"%s\" was not found in the " +
+    public UnloadedFile loadFileFromStorage(String fileName) {
+        try {
+            Path pathToFile = storagePath.resolve(fileName);
+            File file = new File(pathToFile.toUri());
+
+            String contentType = Files.probeContentType(pathToFile);
+            InputStream inputStream = new FileInputStream(file);
+
+            LOGGER.info("Unloaded file \"{}\" with content length = {} and content type = \"{}\"",
+                fileName, file.length(), contentType);
+            return new UnloadedFile(inputStream, contentType, file.length());
+
+        } catch (FileNotFoundException e) {
+            throw throwEx(NOT_FOUND, format("The file with the name \"%s\" was not found in the " +
                         "repository and could not be unloaded!", fileName));
-            }
-        } catch (IOException e) {
+
+        } catch (Exception e) {
             throw throwEx(INTERNAL_SERVER_ERROR,
-                    "Something went wrong while trying load file from storage!", e);
+                format("Something went wrong while trying load file \"%s\" from storage!", fileName), e);
         }
     }
 
     private boolean isNotAllowedExtension(MultipartFile file) {
         String fileName = file.getOriginalFilename();
         if (fileName == null) {
-            throw throwEx(UNSUPPORTED_MEDIA_TYPE, "The file has no file name!");
+            throw throwEx(UNSUPPORTED_MEDIA_TYPE, "The file can't be saved because is hasn't file name!");
         }
 
         String fileExtension = fileName.substring(fileName.lastIndexOf(".") + 1);
@@ -190,10 +216,6 @@ public class FileStorageServiceImpl implements FileStorageService {
     }
 
     private boolean clearDir(File dir) {
-        Arrays.stream(ofNullable(dir.listFiles())
-                .orElse(new File[0]))
-                .filter(file -> !Files.isSymbolicLink(file.toPath()))
-                .forEach(this::clearDir);
-        return dir.delete();
+        return FileSystemUtils.deleteRecursively(dir);
     }
 }
